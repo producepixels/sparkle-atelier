@@ -513,57 +513,77 @@ export default function DiamondPaintingConverter() {
   };
 
   const printChart = () => {
-    if (!pattern || !symbolCanvasRef.current) return;
-    const dataUrl = symbolCanvasRef.current.toDataURL('image/png');
+    if (!pattern || !symbolCanvasRef.current || !previewCanvasRef.current) {
+      alert('Please generate a pattern first.');
+      return;
+    }
+
     const colorUrl = previewCanvasRef.current.toDataURL('image/png');
-    const w = window.open('', '_blank');
-    if (!w) { alert('Allow popups to print the chart'); return; }
+    const masterCanvas = symbolCanvasRef.current;
+    const masterCellPx = masterCanvas.width / pattern.gridW;
 
-    // physical size info
-    const physW = canvasWidthIn;
-    const physH = canvasHeightIn;
-    const drillSizeMmStr = drillSizeMm.toFixed(2);
-
-    // Tile chart across pages — each page covers a portion of the grid at a printable resolution
-    // We aim for ~2 cells per cm = ~5mm per cell on the printed sheet
-    const cellsPerPageW = 50;
-    const cellsPerPageH = 60;
+    // 1:1 print scale: each printed cell = drillSizeMm. Tile across US Letter pages.
+    // Letter: 215.9mm x 279.4mm. Margins 10.16mm (0.4"). Header reserves 18mm.
+    const PAGE_W_MM = 215.9;
+    const PAGE_H_MM = 279.4;
+    const MARGIN_MM = 10.16;
+    const HEADER_MM = 18;
+    const usableW = PAGE_W_MM - 2 * MARGIN_MM;
+    const usableH = PAGE_H_MM - 2 * MARGIN_MM - HEADER_MM;
+    const cellsPerPageW = Math.max(1, Math.floor(usableW / drillSizeMm));
+    const cellsPerPageH = Math.max(1, Math.floor(usableH / drillSizeMm));
     const pagesX = Math.ceil(pattern.gridW / cellsPerPageW);
     const pagesY = Math.ceil(pattern.gridH / cellsPerPageH);
 
+    let tilesHtml = '';
+    for (let py = 0; py < pagesY; py++) {
+      for (let px = 0; px < pagesX; px++) {
+        const startX = px * cellsPerPageW;
+        const startY = py * cellsPerPageH;
+        const tW = Math.min(cellsPerPageW, pattern.gridW - startX);
+        const tH = Math.min(cellsPerPageH, pattern.gridH - startY);
+
+        const tileCanvas = document.createElement('canvas');
+        tileCanvas.width = tW * masterCellPx;
+        tileCanvas.height = tH * masterCellPx;
+        const tctx = tileCanvas.getContext('2d');
+        tctx.imageSmoothingEnabled = false;
+        tctx.drawImage(
+          masterCanvas,
+          startX * masterCellPx, startY * masterCellPx, tW * masterCellPx, tH * masterCellPx,
+          0, 0, tileCanvas.width, tileCanvas.height
+        );
+
+        const tileMmW = tW * drillSizeMm;
+        const tileMmH = tH * drillSizeMm;
+        const rowLabel = String.fromCharCode(65 + py);
+
+        tilesHtml += `
+          <div class="page tile-page">
+            <div class="tile-header">
+              <div><b>Section ${rowLabel}${px + 1}</b> &nbsp;·&nbsp; row ${py + 1} of ${pagesY}, col ${px + 1} of ${pagesX}</div>
+              <div class="num">Cells: cols ${startX + 1}&ndash;${startX + tW}, rows ${startY + 1}&ndash;${startY + tH}</div>
+              <div class="num">Print size: ${tileMmW.toFixed(1)}mm &times; ${tileMmH.toFixed(1)}mm (${(tileMmW/25.4).toFixed(2)}" &times; ${(tileMmH/25.4).toFixed(2)}")</div>
+            </div>
+            <img class="tile" src="${tileCanvas.toDataURL('image/png')}" style="width:${tileMmW}mm;height:${tileMmH}mm;" />
+          </div>
+        `;
+      }
+    }
+
     const paletteRows = pattern.palette.map(p => `
       <tr>
-        <td><span class="sym">${p.symbol}</span></td>
-        <td><span class="sw" style="background:rgb(${p.r},${p.g},${p.b});${p.r+p.g+p.b > 600 ? 'border:1px solid #000' : ''}"></span></td>
+        <td class="sym">${p.symbol}</td>
+        <td><span class="sw" style="background:rgb(${p.r},${p.g},${p.b});${(p.r+p.g+p.b) > 700 ? 'border:1px solid #888' : ''}"></span></td>
         <td><b>DMC ${p.code}</b></td>
         <td>${p.name}</td>
-        <td style="text-align:right">${p.count.toLocaleString()}</td>
-        <td style="text-align:right">${(p.count / pattern.grid.length * 100).toFixed(1)}%</td>
+        <td class="num">${p.count.toLocaleString()}</td>
+        <td class="num">${(p.count / pattern.grid.length * 100).toFixed(1)}%</td>
       </tr>
     `).join('');
 
-    // Build per-page tile images by cropping the master canvas
-    const masterCanvas = symbolCanvasRef.current;
-    const cellPx = masterCanvas.width / pattern.gridW;
-    const tileImages = [];
-    for (let py = 0; py < pagesY; py++) {
-      for (let px = 0; px < pagesX; px++) {
-        const tile = document.createElement('canvas');
-        const startX = px * cellsPerPageW;
-        const startY = py * cellsPerPageH;
-        const tileW = Math.min(cellsPerPageW, pattern.gridW - startX);
-        const tileH = Math.min(cellsPerPageH, pattern.gridH - startY);
-        tile.width = tileW * cellPx;
-        tile.height = tileH * cellPx;
-        const tctx = tile.getContext('2d');
-        tctx.drawImage(masterCanvas, startX * cellPx, startY * cellPx, tileW * cellPx, tileH * cellPx, 0, 0, tile.width, tile.height);
-        tileImages.push({
-          url: tile.toDataURL('image/png'),
-          label: `Section row ${py+1} of ${pagesY}, col ${px+1} of ${pagesX}`,
-          coords: `Cells (${startX+1}–${startX+tileW}, ${startY+1}–${startY+tileH})`
-        });
-      }
-    }
+    const w = window.open('', '_blank');
+    if (!w) { alert('Allow popups to print the chart'); return; }
 
     w.document.write(`
       <!doctype html>
@@ -571,58 +591,69 @@ export default function DiamondPaintingConverter() {
       <head>
         <title>Diamond Painting Pattern</title>
         <style>
-          @page { size: letter; margin: 0.4in; }
+          @page { size: letter; margin: ${MARGIN_MM}mm; }
           * { box-sizing: border-box; }
           body { font-family: Georgia, "Times New Roman", serif; margin: 0; color: #1a1a1a; }
-          .page { page-break-after: always; padding: 0; }
+          .page { page-break-after: always; }
           .page:last-child { page-break-after: auto; }
-          h1 { font-size: 22pt; margin: 0 0 4pt; letter-spacing: -0.01em; }
-          h2 { font-size: 13pt; margin: 14pt 0 6pt; border-bottom: 1.5px solid #1a1a1a; padding-bottom: 3pt; }
-          .meta { font-size: 9pt; color: #555; margin-bottom: 10pt; }
+          h1 { font-size: 26pt; margin: 0 0 6pt; letter-spacing: -0.01em; }
+          h2 { font-size: 14pt; margin: 14pt 0 8pt; border-bottom: 1.5px solid #1a1a1a; padding-bottom: 4pt; }
+          .meta { font-size: 10pt; color: #444; margin-bottom: 14pt; line-height: 1.7; }
           .meta b { color: #1a1a1a; }
-          table { border-collapse: collapse; width: 100%; font-size: 9pt; }
-          th { text-align: left; padding: 4pt 6pt; border-bottom: 1.5px solid #1a1a1a; font-weight: bold; }
-          td { padding: 3pt 6pt; border-bottom: 0.5px solid #ccc; vertical-align: middle; }
-          .sym { font-family: ui-monospace, "Courier New", monospace; font-size: 14pt; font-weight: bold; }
-          .sw { display: inline-block; width: 20pt; height: 14pt; vertical-align: middle; }
-          .preview { max-width: 100%; max-height: 6.5in; display: block; margin: 0 auto; border: 1px solid #888; }
-          .tile { max-width: 100%; max-height: 9in; display: block; margin: 6pt auto 0; border: 1px solid #888; }
-          .tile-label { font-size: 9pt; color: #555; text-align: center; margin-top: 4pt; }
-          .summary-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12pt; margin-top: 8pt; }
-          .stat { background: #f4f1ea; padding: 8pt 10pt; border-left: 3px solid #1a1a1a; }
-          .stat-label { font-size: 8pt; text-transform: uppercase; letter-spacing: 0.05em; color: #666; }
-          .stat-value { font-size: 14pt; font-weight: bold; margin-top: 2pt; }
-          .footer { font-size: 7.5pt; color: #888; text-align: center; margin-top: 10pt; }
+          .preview-wrap { text-align: center; margin: 22pt 0 14pt; }
+          .preview { max-width: 6.5in; max-height: 7.5in; border: 1px solid #888; }
+          table { border-collapse: collapse; width: 100%; font-size: 9.5pt; }
+          thead { display: table-header-group; }
+          tr { page-break-inside: avoid; }
+          th { text-align: left; padding: 5pt 6pt; border-bottom: 1.5px solid #1a1a1a; font-weight: bold; background: #fff; }
+          td { padding: 4pt 6pt; border-bottom: 0.5px solid #ddd; vertical-align: middle; }
+          td.sym { font-family: ui-monospace, "Courier New", monospace; font-size: 14pt; font-weight: bold; text-align: center; width: 36pt; }
+          td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+          .sw { display: inline-block; width: 22pt; height: 14pt; vertical-align: middle; }
+          .footer { font-size: 8pt; color: #888; text-align: center; margin-top: 16pt; font-style: italic; }
+          .tile-page { padding: 0; }
+          .tile-header { font-size: 9pt; color: #444; margin-bottom: 5mm; line-height: 1.55; border-bottom: 0.5pt solid #888; padding-bottom: 3mm; }
+          .tile-header b { color: #1a1a1a; font-size: 11pt; }
+          .tile { display: block; image-rendering: pixelated; image-rendering: crisp-edges; border: 0.25pt solid #444; }
+          .num { font-variant-numeric: tabular-nums; }
         </style>
       </head>
       <body>
         <div class="page">
           <h1>Diamond Painting Pattern</h1>
           <div class="meta">
-            <b>Canvas:</b> ${physW}" × ${physH}" &nbsp;|&nbsp;
-            <b>Drill size:</b> ${drillSizeMmStr}mm ${drillShape} &nbsp;|&nbsp;
-            <b>Grid:</b> ${pattern.gridW} × ${pattern.gridH} &nbsp;|&nbsp;
-            <b>Total drills:</b> ${pattern.grid.length.toLocaleString()} &nbsp;|&nbsp;
-            <b>Colors:</b> ${pattern.palette.length}
+            <b>Canvas:</b> ${canvasWidthIn}" &times; ${canvasHeightIn}" &nbsp;(${(canvasWidthIn*25.4).toFixed(0)}mm &times; ${(canvasHeightIn*25.4).toFixed(0)}mm)<br/>
+            <b>Drill:</b> ${drillSizeMm.toFixed(2)}mm ${drillShape}<br/>
+            <b>Grid:</b> ${pattern.gridW} &times; ${pattern.gridH} cells<br/>
+            <b>Total drills:</b> ${pattern.grid.length.toLocaleString()}<br/>
+            <b>Colors:</b> ${pattern.palette.length}<br/>
+            <b>Pattern sections:</b> ${pagesY} row${pagesY===1?'':'s'} &times; ${pagesX} col${pagesX===1?'':'s'} (${pagesY * pagesX} page${pagesY*pagesX===1?'':'s'} at 1:1 scale)
           </div>
-          <h2>Color Preview</h2>
-          <img class="preview" src="${colorUrl}" />
-          <h2>DMC Color Legend</h2>
+          <div class="preview-wrap">
+            <img class="preview" src="${colorUrl}" alt="Color preview" />
+          </div>
+          <div class="footer">Print at 100% scale (no fit-to-page). Section pages print at exact canvas dimensions for accurate drill placement.</div>
+        </div>
+
+        <div class="page">
+          <h1 style="font-size:20pt">DMC Color Legend</h1>
+          <div class="meta" style="margin-bottom:10pt">${pattern.palette.length} colors &middot; symbols match the section pages.</div>
           <table>
             <thead>
-              <tr><th>Symbol</th><th>Color</th><th>DMC</th><th>Name</th><th style="text-align:right">Count</th><th style="text-align:right">%</th></tr>
+              <tr>
+                <th style="width:36pt;text-align:center">Symbol</th>
+                <th style="width:34pt">Color</th>
+                <th>DMC</th>
+                <th>Name</th>
+                <th class="num">Count</th>
+                <th class="num">%</th>
+              </tr>
             </thead>
             <tbody>${paletteRows}</tbody>
           </table>
-          <div class="footer">Pattern generated for personal use • Tile pages follow</div>
         </div>
-        ${tileImages.map((t, i) => `
-          <div class="page">
-            <h2 style="margin-top:0">${t.label}</h2>
-            <div class="meta">${t.coords}</div>
-            <img class="tile" src="${t.url}" />
-          </div>
-        `).join('')}
+
+        ${tilesHtml}
       </body>
       </html>
     `);
@@ -791,24 +822,36 @@ export default function DiamondPaintingConverter() {
                   </div>
 
                   <div style={{ overflow: 'auto', maxHeight: '70vh', background: '#f4f1ea', padding: '12px', border: '1px solid #d4cfc0' }}>
-                    {view === 'color' && (
-                      <canvas ref={previewCanvasRef} style={{ display: 'block', imageRendering: 'auto', width: `${pattern.gridW * 8 * zoom}px`, height: `${pattern.gridH * 8 * zoom}px` }} />
-                    )}
-                    {view === 'symbol' && (
-                      <canvas ref={symbolCanvasRef} style={{ display: 'block', imageRendering: 'pixelated', width: `${pattern.gridW * 22 * zoom * 0.4}px`, height: `${pattern.gridH * 22 * zoom * 0.4}px` }} />
-                    )}
-                    {view === 'side' && (
-                      <div className="grid grid-cols-2 gap-3">
-                        <div>
-                          <div className="label-sm mb-2">Color</div>
-                          <canvas ref={previewCanvasRef} style={{ display: 'block', width: '100%' }} />
-                        </div>
-                        <div>
-                          <div className="label-sm mb-2">Symbols</div>
-                          <canvas ref={symbolCanvasRef} style={{ display: 'block', width: '100%' }} />
-                        </div>
+                    <div style={{
+                      display: view === 'side' ? 'grid' : 'block',
+                      gridTemplateColumns: view === 'side' ? '1fr 1fr' : undefined,
+                      gap: view === 'side' ? '12px' : 0,
+                    }}>
+                      <div style={{ display: (view === 'color' || view === 'side') ? 'block' : 'none' }}>
+                        {view === 'side' && <div className="label-sm mb-2">Color</div>}
+                        <canvas
+                          ref={previewCanvasRef}
+                          style={{
+                            display: 'block',
+                            imageRendering: 'auto',
+                            width: view === 'side' ? '100%' : `${pattern.gridW * 8 * zoom}px`,
+                            height: view === 'side' ? 'auto' : `${pattern.gridH * 8 * zoom}px`,
+                          }}
+                        />
                       </div>
-                    )}
+                      <div style={{ display: (view === 'symbol' || view === 'side') ? 'block' : 'none' }}>
+                        {view === 'side' && <div className="label-sm mb-2">Symbols</div>}
+                        <canvas
+                          ref={symbolCanvasRef}
+                          style={{
+                            display: 'block',
+                            imageRendering: 'pixelated',
+                            width: view === 'side' ? '100%' : `${pattern.gridW * 22 * zoom * 0.4}px`,
+                            height: view === 'side' ? 'auto' : `${pattern.gridH * 22 * zoom * 0.4}px`,
+                          }}
+                        />
+                      </div>
+                    </div>
                   </div>
 
                   <div className="grid grid-cols-3 gap-2 mt-4">
