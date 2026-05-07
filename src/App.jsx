@@ -504,14 +504,6 @@ export default function DiamondPaintingConverter() {
     }
   }, [pattern]);
 
-  const downloadPNG = (canvasRef, name) => {
-    if (!canvasRef.current) return;
-    const link = document.createElement('a');
-    link.download = name;
-    link.href = canvasRef.current.toDataURL('image/png');
-    link.click();
-  };
-
   // === DMC Legend — opens a print-ready single-page sheet ===
   const downloadLegend = () => {
     if (!pattern) return;
@@ -1048,18 +1040,6 @@ ${symbols}
                   </div>
 
                   <div className="mt-5 space-y-4">
-                    <div>
-                      <div className="label-sm mb-2">Quick downloads</div>
-                      <div className="grid grid-cols-2 gap-2">
-                        <button className="btn-ghost py-2 text-xs flex items-center justify-center gap-2" onClick={() => downloadPNG(previewCanvasRef, 'diamond-color-preview.png')}>
-                          <Download size={14} /> Color PNG
-                        </button>
-                        <button className="btn-ghost py-2 text-xs flex items-center justify-center gap-2" onClick={() => downloadPNG(symbolCanvasRef, 'diamond-symbol-chart.png')}>
-                          <Download size={14} /> Chart PNG
-                        </button>
-                      </div>
-                    </div>
-
                     <div>
                       <div className="label-sm mb-2">Print at home</div>
                       <div className="grid grid-cols-2 gap-2">
