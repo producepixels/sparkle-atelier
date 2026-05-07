@@ -579,7 +579,7 @@ export default function DiamondPaintingConverter() {
 
     const codeMap = new Map(pattern.palette.map(p => [p.code, p]));
 
-    // tinted color cells
+    // tinted color cells (no grid lines)
     for (let y = 0; y < pattern.gridH; y++) {
       for (let x = 0; x < pattern.gridW; x++) {
         const code = pattern.grid[y * pattern.gridW + x];
@@ -590,31 +590,6 @@ export default function DiamondPaintingConverter() {
       }
     }
 
-    // light grid lines
-    ctx.strokeStyle = 'rgba(0,0,0,0.15)';
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    for (let x = 0; x <= pattern.gridW; x++) {
-      ctx.moveTo(x * cellPx, 0); ctx.lineTo(x * cellPx, h);
-    }
-    for (let y = 0; y <= pattern.gridH; y++) {
-      ctx.moveTo(0, y * cellPx); ctx.lineTo(w, y * cellPx);
-    }
-    ctx.stroke();
-
-    // every-10 grid lines (heavier, for navigation)
-    ctx.strokeStyle = 'rgba(0,0,0,0.5)';
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    for (let x = 0; x <= pattern.gridW; x += 10) {
-      ctx.moveTo(x * cellPx, 0); ctx.lineTo(x * cellPx, h);
-    }
-    for (let y = 0; y <= pattern.gridH; y += 10) {
-      ctx.moveTo(0, y * cellPx); ctx.lineTo(w, y * cellPx);
-    }
-    ctx.stroke();
-
-    // symbols on top
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     for (let y = 0; y < pattern.gridH; y++) {
@@ -661,28 +636,10 @@ export default function DiamondPaintingConverter() {
       }
     }
 
-    let grid1 = '';
-    for (let x = 0; x <= pattern.gridW; x++) {
-      grid1 += `<line x1="${(x*cellMm).toFixed(3)}" y1="0" x2="${(x*cellMm).toFixed(3)}" y2="${heightMm}"/>`;
-    }
-    for (let y = 0; y <= pattern.gridH; y++) {
-      grid1 += `<line x1="0" y1="${(y*cellMm).toFixed(3)}" x2="${widthMm}" y2="${(y*cellMm).toFixed(3)}"/>`;
-    }
-
-    let grid10 = '';
-    for (let x = 0; x <= pattern.gridW; x += 10) {
-      grid10 += `<line x1="${(x*cellMm).toFixed(3)}" y1="0" x2="${(x*cellMm).toFixed(3)}" y2="${heightMm}"/>`;
-    }
-    for (let y = 0; y <= pattern.gridH; y += 10) {
-      grid10 += `<line x1="0" y1="${(y*cellMm).toFixed(3)}" x2="${widthMm}" y2="${(y*cellMm).toFixed(3)}"/>`;
-    }
-
     const svg = `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="${widthMm}mm" height="${heightMm}mm" viewBox="0 0 ${widthMm} ${heightMm}">
 <rect width="${widthMm}" height="${heightMm}" fill="#ffffff"/>
 ${cells}
-<g stroke="rgba(0,0,0,0.15)" stroke-width="0.05" fill="none">${grid1}</g>
-<g stroke="rgba(0,0,0,0.5)" stroke-width="0.18" fill="none">${grid10}</g>
 ${symbols}
 </svg>`;
 
