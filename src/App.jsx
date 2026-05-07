@@ -526,7 +526,7 @@ export default function DiamondPaintingConverter() {
   <title>DMC Color Legend</title>
   <style>
     @page { size: letter; margin: 0.5in; }
-    body { font-family: Georgia, "Times New Roman", serif; margin: 0; padding: 0; color: #1a1a1a; }
+    body { font-family: Calibri, Carlito, "Segoe UI", Helvetica, Arial, sans-serif; margin: 0; padding: 0; color: #1a1a1a; }
     h1 { font-size: 22pt; margin: 0 0 4pt; letter-spacing: -0.01em; }
     .meta { font-size: 10pt; color: #444; margin-bottom: 14pt; line-height: 1.6; }
     table { border-collapse: collapse; width: 100%; font-size: 10pt; }
@@ -776,7 +776,7 @@ ${symbols}
         <style>
           @page { size: letter; margin: ${MARGIN_MM}mm; }
           * { box-sizing: border-box; }
-          body { font-family: Georgia, "Times New Roman", serif; margin: 0; color: #1a1a1a; }
+          body { font-family: Calibri, Carlito, "Segoe UI", Helvetica, Arial, sans-serif; margin: 0; color: #1a1a1a; }
           .page { page-break-after: always; }
           .page:last-child { page-break-after: auto; }
           h1 { font-size: 26pt; margin: 0 0 6pt; letter-spacing: -0.01em; }
@@ -845,7 +845,7 @@ ${symbols}
   };
 
   return (
-    <div className="min-h-screen" style={{ background: '#f4f1ea', fontFamily: 'Georgia, "Times New Roman", serif', color: '#1a1a1a' }}>
+    <div className="min-h-screen" style={{ background: '#f4f1ea', fontFamily: 'Calibri, Carlito, "Segoe UI", Helvetica, Arial, sans-serif', color: '#1a1a1a' }}>
       <style>{`
         @keyframes shimmer {
           0%,100% { transform: rotate(0deg) scale(1); opacity: 0.8; }
@@ -861,7 +861,7 @@ ${symbols}
         input[type="number"], select { font-family: inherit; background: #fffdf8; border: 1px solid #c4bfb0; padding: 6px 8px; font-size: 14px; width: 100%; }
         input[type="number"]:focus, select:focus { outline: none; border-color: #1a1a1a; }
         input[type="range"] { width: 100%; accent-color: #1a1a1a; }
-        .label-sm { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: #666; font-family: ui-sans-serif, system-ui, sans-serif; font-weight: 600; }
+        .label-sm { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: #666; font-family: inherit; font-weight: 600; }
         .num-display { font-variant-numeric: tabular-nums; font-family: ui-monospace, "Courier New", monospace; }
         .tab { padding: 8px 14px; border-bottom: 2px solid transparent; cursor: pointer; font-size: 13px; letter-spacing: 0.02em; transition: all 0.2s; }
         .tab.active { border-color: #1a1a1a; font-weight: bold; }
