@@ -517,7 +517,6 @@ export default function DiamondPaintingConverter() {
         <td><b>DMC ${p.code}</b></td>
         <td>${p.name}</td>
         <td class="num">${p.count.toLocaleString()}</td>
-        <td class="num">${(p.count / pattern.grid.length * 100).toFixed(1)}%</td>
       </tr>
     `).join('');
 
@@ -553,7 +552,6 @@ export default function DiamondPaintingConverter() {
         <th>DMC</th>
         <th>Name</th>
         <th class="num">Count</th>
-        <th class="num">%</th>
       </tr>
     </thead>
     <tbody>${paletteRows}</tbody>
