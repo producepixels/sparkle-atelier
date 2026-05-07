@@ -512,6 +512,199 @@ export default function DiamondPaintingConverter() {
     link.click();
   };
 
+  // === DMC Legend — opens a print-ready single-page sheet ===
+  const downloadLegend = () => {
+    if (!pattern) return;
+    const w = window.open('', '_blank');
+    if (!w) { alert('Allow popups to print the legend'); return; }
+
+    const paletteRows = pattern.palette.map(p => `
+      <tr>
+        <td class="sym">${p.symbol}</td>
+        <td><span class="sw" style="background:rgb(${p.r},${p.g},${p.b});${(p.r+p.g+p.b) > 700 ? 'border:1px solid #888' : ''}"></span></td>
+        <td><b>DMC ${p.code}</b></td>
+        <td>${p.name}</td>
+        <td class="num">${p.count.toLocaleString()}</td>
+        <td class="num">${(p.count / pattern.grid.length * 100).toFixed(1)}%</td>
+      </tr>
+    `).join('');
+
+    w.document.write(`<!doctype html>
+<html>
+<head>
+  <title>DMC Color Legend</title>
+  <style>
+    @page { size: letter; margin: 0.5in; }
+    body { font-family: Georgia, "Times New Roman", serif; margin: 0; padding: 0; color: #1a1a1a; }
+    h1 { font-size: 22pt; margin: 0 0 4pt; letter-spacing: -0.01em; }
+    .meta { font-size: 10pt; color: #444; margin-bottom: 14pt; line-height: 1.6; }
+    table { border-collapse: collapse; width: 100%; font-size: 10pt; }
+    thead { display: table-header-group; }
+    tr { page-break-inside: avoid; }
+    th { text-align: left; padding: 5pt 6pt; border-bottom: 1.5px solid #1a1a1a; font-weight: bold; background: #fff; }
+    td { padding: 5pt 6pt; border-bottom: 0.5px solid #ddd; vertical-align: middle; }
+    td.sym { font-family: ui-monospace, "Courier New", monospace; font-size: 14pt; font-weight: bold; text-align: center; width: 38pt; }
+    td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+    .sw { display: inline-block; width: 24pt; height: 16pt; vertical-align: middle; }
+  </style>
+</head>
+<body>
+  <h1>DMC Color Legend</h1>
+  <div class="meta">
+    ${pattern.palette.length} colors &middot; ${pattern.grid.length.toLocaleString()} drills &middot; Canvas ${canvasWidthIn}" &times; ${canvasHeightIn}" &middot; ${drillSizeMm.toFixed(2)}mm ${drillShape}
+  </div>
+  <table>
+    <thead>
+      <tr>
+        <th style="width:38pt;text-align:center">Symbol</th>
+        <th style="width:36pt">Color</th>
+        <th>DMC</th>
+        <th>Name</th>
+        <th class="num">Count</th>
+        <th class="num">%</th>
+      </tr>
+    </thead>
+    <tbody>${paletteRows}</tbody>
+  </table>
+</body>
+</html>`);
+    w.document.close();
+    setTimeout(() => { w.focus(); w.print(); }, 500);
+  };
+
+  // === 300 DPI PNG of full canvas symbol chart for commercial print ===
+  const exportPNG300DPI = () => {
+    if (!pattern) return;
+    const DPI = 300;
+    const cellPx = Math.max(8, Math.round(drillSizeMm * DPI / 25.4));
+    const w = pattern.gridW * cellPx;
+    const h = pattern.gridH * cellPx;
+
+    const canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, w, h);
+
+    const codeMap = new Map(pattern.palette.map(p => [p.code, p]));
+
+    // tinted color cells
+    for (let y = 0; y < pattern.gridH; y++) {
+      for (let x = 0; x < pattern.gridW; x++) {
+        const code = pattern.grid[y * pattern.gridW + x];
+        const c = codeMap.get(code);
+        if (!c) continue;
+        ctx.fillStyle = `rgba(${c.r},${c.g},${c.b},0.35)`;
+        ctx.fillRect(x * cellPx, y * cellPx, cellPx, cellPx);
+      }
+    }
+
+    // light grid lines
+    ctx.strokeStyle = 'rgba(0,0,0,0.15)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (let x = 0; x <= pattern.gridW; x++) {
+      ctx.moveTo(x * cellPx, 0); ctx.lineTo(x * cellPx, h);
+    }
+    for (let y = 0; y <= pattern.gridH; y++) {
+      ctx.moveTo(0, y * cellPx); ctx.lineTo(w, y * cellPx);
+    }
+    ctx.stroke();
+
+    // every-10 grid lines (heavier, for navigation)
+    ctx.strokeStyle = 'rgba(0,0,0,0.5)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    for (let x = 0; x <= pattern.gridW; x += 10) {
+      ctx.moveTo(x * cellPx, 0); ctx.lineTo(x * cellPx, h);
+    }
+    for (let y = 0; y <= pattern.gridH; y += 10) {
+      ctx.moveTo(0, y * cellPx); ctx.lineTo(w, y * cellPx);
+    }
+    ctx.stroke();
+
+    // symbols on top
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    for (let y = 0; y < pattern.gridH; y++) {
+      for (let x = 0; x < pattern.gridW; x++) {
+        const code = pattern.grid[y * pattern.gridW + x];
+        const c = codeMap.get(code);
+        if (!c) continue;
+        const fontSize = c.symbol.length > 1 ? Math.floor(cellPx * 0.45) : Math.floor(cellPx * 0.65);
+        ctx.font = `bold ${fontSize}px "Courier New", Consolas, ui-monospace, monospace`;
+        ctx.fillStyle = '#000';
+        ctx.fillText(c.symbol, x * cellPx + cellPx / 2, y * cellPx + cellPx / 2);
+      }
+    }
+
+    canvas.toBlob(blob => {
+      if (!blob) { alert('PNG export failed (canvas too large?)'); return; }
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `sparkle-pattern-${pattern.gridW}x${pattern.gridH}-300dpi.png`;
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }, 'image/png');
+  };
+
+  // === SVG vector export at exact canvas dimensions ===
+  const exportSVG = () => {
+    if (!pattern) return;
+    const codeMap = new Map(pattern.palette.map(p => [p.code, p]));
+    const cellMm = drillSizeMm;
+    const widthMm = pattern.gridW * cellMm;
+    const heightMm = pattern.gridH * cellMm;
+
+    let cells = '';
+    let symbols = '';
+    for (let y = 0; y < pattern.gridH; y++) {
+      for (let x = 0; x < pattern.gridW; x++) {
+        const code = pattern.grid[y * pattern.gridW + x];
+        const c = codeMap.get(code);
+        if (!c) continue;
+        cells += `<rect x="${(x*cellMm).toFixed(3)}" y="${(y*cellMm).toFixed(3)}" width="${cellMm}" height="${cellMm}" fill="rgb(${c.r},${c.g},${c.b})" fill-opacity="0.35"/>`;
+        const fs = c.symbol.length > 1 ? cellMm * 0.45 : cellMm * 0.62;
+        symbols += `<text x="${(x*cellMm + cellMm/2).toFixed(3)}" y="${(y*cellMm + cellMm/2).toFixed(3)}" font-family="'Courier New', Consolas, monospace" font-size="${fs.toFixed(3)}" font-weight="bold" text-anchor="middle" dominant-baseline="central" fill="#000">${c.symbol}</text>`;
+      }
+    }
+
+    let grid1 = '';
+    for (let x = 0; x <= pattern.gridW; x++) {
+      grid1 += `<line x1="${(x*cellMm).toFixed(3)}" y1="0" x2="${(x*cellMm).toFixed(3)}" y2="${heightMm}"/>`;
+    }
+    for (let y = 0; y <= pattern.gridH; y++) {
+      grid1 += `<line x1="0" y1="${(y*cellMm).toFixed(3)}" x2="${widthMm}" y2="${(y*cellMm).toFixed(3)}"/>`;
+    }
+
+    let grid10 = '';
+    for (let x = 0; x <= pattern.gridW; x += 10) {
+      grid10 += `<line x1="${(x*cellMm).toFixed(3)}" y1="0" x2="${(x*cellMm).toFixed(3)}" y2="${heightMm}"/>`;
+    }
+    for (let y = 0; y <= pattern.gridH; y += 10) {
+      grid10 += `<line x1="0" y1="${(y*cellMm).toFixed(3)}" x2="${widthMm}" y2="${(y*cellMm).toFixed(3)}"/>`;
+    }
+
+    const svg = `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="${widthMm}mm" height="${heightMm}mm" viewBox="0 0 ${widthMm} ${heightMm}">
+<rect width="${widthMm}" height="${heightMm}" fill="#ffffff"/>
+${cells}
+<g stroke="rgba(0,0,0,0.15)" stroke-width="0.05" fill="none">${grid1}</g>
+<g stroke="rgba(0,0,0,0.5)" stroke-width="0.18" fill="none">${grid10}</g>
+${symbols}
+</svg>`;
+
+    const blob = new Blob([svg], { type: 'image/svg+xml' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `sparkle-pattern-${pattern.gridW}x${pattern.gridH}.svg`;
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+
   const printChart = () => {
     if (!pattern || !symbolCanvasRef.current || !previewCanvasRef.current) {
       alert('Please generate a pattern first.');
@@ -854,16 +1047,42 @@ export default function DiamondPaintingConverter() {
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-3 gap-2 mt-4">
-                    <button className="btn-ghost py-2 text-xs flex items-center justify-center gap-2" onClick={() => downloadPNG(previewCanvasRef, 'diamond-color-preview.png')}>
-                      <Download size={14} /> Color PNG
-                    </button>
-                    <button className="btn-ghost py-2 text-xs flex items-center justify-center gap-2" onClick={() => downloadPNG(symbolCanvasRef, 'diamond-symbol-chart.png')}>
-                      <Download size={14} /> Chart PNG
-                    </button>
-                    <button className="btn-primary py-2 text-xs flex items-center justify-center gap-2" onClick={printChart}>
-                      <Printer size={14} /> Print full pattern
-                    </button>
+                  <div className="mt-5 space-y-4">
+                    <div>
+                      <div className="label-sm mb-2">Quick downloads</div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <button className="btn-ghost py-2 text-xs flex items-center justify-center gap-2" onClick={() => downloadPNG(previewCanvasRef, 'diamond-color-preview.png')}>
+                          <Download size={14} /> Color PNG
+                        </button>
+                        <button className="btn-ghost py-2 text-xs flex items-center justify-center gap-2" onClick={() => downloadPNG(symbolCanvasRef, 'diamond-symbol-chart.png')}>
+                          <Download size={14} /> Chart PNG
+                        </button>
+                      </div>
+                    </div>
+
+                    <div>
+                      <div className="label-sm mb-2">Print at home</div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <button className="btn-ghost py-2 text-xs flex items-center justify-center gap-2" onClick={downloadLegend}>
+                          <Printer size={14} /> DMC Legend
+                        </button>
+                        <button className="btn-primary py-2 text-xs flex items-center justify-center gap-2" onClick={printChart}>
+                          <Printer size={14} /> Full Pattern PDF
+                        </button>
+                      </div>
+                    </div>
+
+                    <div>
+                      <div className="label-sm mb-2">For commercial print shop</div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <button className="btn-ghost py-2 text-xs flex items-center justify-center gap-2" onClick={exportPNG300DPI}>
+                          <Download size={14} /> PNG · 300 DPI
+                        </button>
+                        <button className="btn-ghost py-2 text-xs flex items-center justify-center gap-2" onClick={exportSVG}>
+                          <Download size={14} /> SVG · Vector
+                        </button>
+                      </div>
+                    </div>
                   </div>
                 </div>
               </>
