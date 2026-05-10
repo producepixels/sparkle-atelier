@@ -1,5 +1,133 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { Upload, Download, Sparkles, Settings, Grid3x3, Printer, Palette, Image as ImageIcon, Loader2 } from 'lucide-react';
+import { Upload, Download, Sparkles, Settings, Grid3x3, Printer, Palette, Image as ImageIcon, Loader2, History, Trash2, RotateCcw, ChevronDown, ChevronUp } from 'lucide-react';
+
+// === IndexedDB history store ===
+// Keeps every generated pattern + the source image so users can re-print
+// the legend or chart later without re-uploading. Per-browser, per-device.
+const DB_NAME = 'sparkle-atelier';
+const DB_VERSION = 1;
+const STORE = 'patterns';
+const HISTORY_LIMIT = 50;
+const HISTORY_CHANNEL = 'sparkle-atelier-history';
+
+function openDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, DB_VERSION);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains(STORE)) {
+        const store = db.createObjectStore(STORE, { keyPath: 'id' });
+        store.createIndex('createdAt', 'createdAt');
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function dbPut(record) {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE, 'readwrite');
+    tx.objectStore(STORE).put(record);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+async function dbGetAll() {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE, 'readonly');
+    const req = tx.objectStore(STORE).getAll();
+    req.onsuccess = () => resolve(req.result || []);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function dbGet(id) {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE, 'readonly');
+    const req = tx.objectStore(STORE).get(id);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function dbDelete(id) {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE, 'readwrite');
+    tx.objectStore(STORE).delete(id);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+async function dbClear() {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE, 'readwrite');
+    tx.objectStore(STORE).clear();
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+// Re-encode source image as JPEG (or PNG if it has transparency) at max 1600px wide.
+// Phone photos are 4-12MB raw; this knocks them down to ~0.5-1.5MB so 50 entries fit comfortably.
+function compressForStorage(dataUrl, maxDim = 1600, quality = 0.85) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
+      const w = Math.round(img.width * scale);
+      const h = Math.round(img.height * scale);
+      const c = document.createElement('canvas');
+      c.width = w; c.height = h;
+      const ctx = c.getContext('2d');
+      ctx.drawImage(img, 0, 0, w, h);
+      // PNG inputs may have transparency; keep PNG. Anything else, JPEG for size.
+      const fmt = dataUrl.startsWith('data:image/png') ? 'image/png' : 'image/jpeg';
+      resolve({ dataUrl: c.toDataURL(fmt, quality), width: img.width, height: img.height });
+    };
+    img.onerror = () => resolve({ dataUrl, width: 0, height: 0 });
+    img.src = dataUrl;
+  });
+}
+
+function formatHistoryDate(ts) {
+  if (!ts) return '';
+  const d = new Date(ts);
+  const now = new Date();
+  const sameDay = d.toDateString() === now.toDateString();
+  const yest = new Date(now); yest.setDate(yest.getDate() - 1);
+  const isYesterday = d.toDateString() === yest.toDateString();
+  const time = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  if (sameDay) return `Today, ${time}`;
+  if (isYesterday) return `Yesterday, ${time}`;
+  return d.toLocaleDateString([], { month: 'short', day: 'numeric', year: d.getFullYear() === now.getFullYear() ? undefined : 'numeric' });
+}
+
+// 200px-wide JPEG thumb for the history list. Keeps the dropdown snappy
+// even with 50 entries on slower phones.
+function makeThumbnail(dataUrl, maxDim = 200) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
+      const w = Math.round(img.width * scale);
+      const h = Math.round(img.height * scale);
+      const c = document.createElement('canvas');
+      c.width = w; c.height = h;
+      c.getContext('2d').drawImage(img, 0, 0, w, h);
+      resolve(c.toDataURL('image/jpeg', 0.7));
+    };
+    img.onerror = () => resolve(dataUrl);
+    img.src = dataUrl;
+  });
+}
 
 // === DMC Color Palette ===
 // Curated list of common DMC floss colors with RGB values.
@@ -323,7 +451,7 @@ const SYMBOL_POOL = [
 ];
 
 export default function DiamondPaintingConverter() {
-  const [imageData, setImageData] = useState(null); // {dataUrl, width, height}
+  const [imageData, setImageData] = useState(null); // {dataUrl, width, height, name}
   const [canvasWidthIn, setCanvasWidthIn] = useState(12);
   const [canvasHeightIn, setCanvasHeightIn] = useState(12);
   const [drillSizeMm, setDrillSizeMm] = useState(2.5);
@@ -333,10 +461,52 @@ export default function DiamondPaintingConverter() {
   const [processing, setProcessing] = useState(false);
   const [view, setView] = useState('color'); // 'color' | 'symbol' | 'side-by-side'
   const [zoom, setZoom] = useState(1);
+  const [history, setHistory] = useState([]); // [{id, name, thumbDataUrl, createdAt, settings, gridW, gridH, paletteCount}]
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [historyError, setHistoryError] = useState(null);
+  const [activeHistoryId, setActiveHistoryId] = useState(null);
 
   const fileInputRef = useRef(null);
   const previewCanvasRef = useRef(null);
   const symbolCanvasRef = useRef(null);
+  const broadcastRef = useRef(null);
+  const firstHistoryLoadRef = useRef(true);
+
+  // Load history (metadata only — no full images) and listen for cross-tab updates.
+  const refreshHistory = useCallback(async () => {
+    try {
+      const all = await dbGetAll();
+      const summary = all
+        .map(({ imageDataUrl, pattern: _p, ...rest }) => rest)
+        .sort((a, b) => b.createdAt - a.createdAt);
+      setHistory(summary);
+      setHistoryError(null);
+      // Auto-open on the very first load if there are saved patterns. Don't fight the user
+      // after that — refreshes on tab focus shouldn't reopen a panel they closed.
+      if (firstHistoryLoadRef.current) {
+        firstHistoryLoadRef.current = false;
+        if (summary.length > 0) setHistoryOpen(true);
+      }
+    } catch (err) {
+      console.error('Failed to load history', err);
+      setHistoryError(err.message || 'Could not load history');
+    }
+  }, []);
+
+  useEffect(() => {
+    refreshHistory();
+    if ('BroadcastChannel' in window) {
+      const bc = new BroadcastChannel(HISTORY_CHANNEL);
+      bc.onmessage = () => refreshHistory();
+      broadcastRef.current = bc;
+    }
+    const onVis = () => { if (document.visibilityState === 'visible') refreshHistory(); };
+    document.addEventListener('visibilitychange', onVis);
+    return () => {
+      document.removeEventListener('visibilitychange', onVis);
+      if (broadcastRef.current) broadcastRef.current.close();
+    };
+  }, [refreshHistory]);
 
   // Derived: grid dimensions based on physical sizes
   const MM_PER_IN = 25.4;
@@ -351,12 +521,139 @@ export default function DiamondPaintingConverter() {
     reader.onload = (ev) => {
       const img = new Image();
       img.onload = () => {
-        setImageData({ dataUrl: ev.target.result, width: img.width, height: img.height });
+        setImageData({ dataUrl: ev.target.result, width: img.width, height: img.height, name: file.name });
         setPattern(null);
+        setActiveHistoryId(null);
       };
       img.src = ev.target.result;
     };
     reader.readAsDataURL(file);
+  };
+
+  // Save current image+pattern to history. Compresses image first so phones don't blow past
+  // IndexedDB quotas, and prunes oldest entries past HISTORY_LIMIT.
+  const saveToHistory = useCallback(async (currentImage, currentPattern) => {
+    if (!currentImage || !currentPattern) return;
+    try {
+      const [{ dataUrl: storedImage }, thumbDataUrl] = await Promise.all([
+        compressForStorage(currentImage.dataUrl),
+        makeThumbnail(currentImage.dataUrl),
+      ]);
+      const id = `pat_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      const niceName = currentImage.name
+        ? currentImage.name.replace(/\.[^.]+$/, '')
+        : `Pattern ${new Date().toLocaleDateString()}`;
+      const record = {
+        id,
+        name: niceName,
+        createdAt: Date.now(),
+        thumbDataUrl,
+        imageDataUrl: storedImage,
+        sourceWidth: currentImage.width,
+        sourceHeight: currentImage.height,
+        gridW: currentPattern.gridW,
+        gridH: currentPattern.gridH,
+        paletteCount: currentPattern.palette.length,
+        drillCount: currentPattern.grid.length,
+        settings: {
+          canvasWidthIn,
+          canvasHeightIn,
+          drillSizeMm,
+          maxColors,
+          drillShape,
+        },
+        pattern: {
+          grid: currentPattern.grid,
+          palette: currentPattern.palette,
+          gridW: currentPattern.gridW,
+          gridH: currentPattern.gridH,
+        },
+      };
+      await dbPut(record);
+
+      // Prune oldest beyond limit
+      const all = await dbGetAll();
+      if (all.length > HISTORY_LIMIT) {
+        const sorted = all.sort((a, b) => a.createdAt - b.createdAt);
+        const toDelete = sorted.slice(0, all.length - HISTORY_LIMIT);
+        for (const old of toDelete) await dbDelete(old.id);
+      }
+
+      setActiveHistoryId(id);
+      await refreshHistory();
+      if (broadcastRef.current) broadcastRef.current.postMessage({ type: 'history-updated' });
+    } catch (err) {
+      console.error('Failed to save to history', err);
+      setHistoryError('Could not save to history. Storage may be full.');
+    }
+  }, [canvasWidthIn, canvasHeightIn, drillSizeMm, maxColors, drillShape, refreshHistory]);
+
+  // Restore: pull full record from DB and rehydrate state without re-running the matcher.
+  const restoreFromHistory = async (id) => {
+    try {
+      const rec = await dbGet(id);
+      if (!rec) return;
+      setImageData({
+        dataUrl: rec.imageDataUrl,
+        width: rec.sourceWidth || 0,
+        height: rec.sourceHeight || 0,
+        name: rec.name,
+      });
+      if (rec.settings) {
+        setCanvasWidthIn(rec.settings.canvasWidthIn);
+        setCanvasHeightIn(rec.settings.canvasHeightIn);
+        setDrillSizeMm(rec.settings.drillSizeMm);
+        setMaxColors(rec.settings.maxColors);
+        setDrillShape(rec.settings.drillShape);
+      }
+      setPattern(rec.pattern);
+      setActiveHistoryId(id);
+      setHistoryOpen(false);
+    } catch (err) {
+      console.error('Failed to restore from history', err);
+      setHistoryError('Could not load that pattern.');
+    }
+  };
+
+  const deleteHistoryItem = async (id, e) => {
+    if (e) e.stopPropagation();
+    try {
+      await dbDelete(id);
+      if (activeHistoryId === id) setActiveHistoryId(null);
+      await refreshHistory();
+      if (broadcastRef.current) broadcastRef.current.postMessage({ type: 'history-updated' });
+    } catch (err) {
+      console.error('Failed to delete', err);
+    }
+  };
+
+  const clearAllHistory = async () => {
+    if (!confirm('Delete every saved pattern? This cannot be undone.')) return;
+    try {
+      await dbClear();
+      setActiveHistoryId(null);
+      await refreshHistory();
+      if (broadcastRef.current) broadcastRef.current.postMessage({ type: 'history-updated' });
+    } catch (err) {
+      console.error('Failed to clear history', err);
+    }
+  };
+
+  const renameHistoryItem = async (id) => {
+    try {
+      const rec = await dbGet(id);
+      if (!rec) return;
+      const next = prompt('Rename this pattern:', rec.name || '');
+      if (next == null) return;
+      const trimmed = next.trim();
+      if (!trimmed || trimmed === rec.name) return;
+      rec.name = trimmed;
+      await dbPut(rec);
+      await refreshHistory();
+      if (broadcastRef.current) broadcastRef.current.postMessage({ type: 'history-updated' });
+    } catch (err) {
+      console.error('Failed to rename', err);
+    }
   };
 
   const generatePattern = useCallback(async () => {
@@ -429,9 +726,13 @@ export default function DiamondPaintingConverter() {
         count: finalCounts.get(c.code) || 0,
       }));
 
-    setPattern({ grid, palette, gridW, gridH });
+    const newPattern = { grid, palette, gridW, gridH };
+    setPattern(newPattern);
     setProcessing(false);
-  }, [imageData, gridW, gridH, maxColors]);
+
+    // Auto-save to local history so user can re-print legend later without re-uploading.
+    saveToHistory(imageData, newPattern);
+  }, [imageData, gridW, gridH, maxColors, saveToHistory]);
 
   // Render color preview
   useEffect(() => {
@@ -510,10 +811,17 @@ export default function DiamondPaintingConverter() {
     const w = window.open('', '_blank');
     if (!w) { alert('Allow popups to print the legend'); return; }
 
+    // Inline SVG swatches: iOS Safari strips CSS background colors when printing,
+    // even with print-color-adjust set. SVG fill attributes always print.
+    const swatchSvg = (p) => {
+      const stroke = (p.r + p.g + p.b) > 700 ? '#888' : 'none';
+      return `<svg width="32" height="20" viewBox="0 0 32 20" xmlns="http://www.w3.org/2000/svg" style="display:inline-block;vertical-align:middle"><rect width="32" height="20" fill="rgb(${p.r},${p.g},${p.b})" stroke="${stroke}" stroke-width="1"/></svg>`;
+    };
+
     const paletteRows = pattern.palette.map(p => `
       <tr>
         <td class="sym">${p.symbol}</td>
-        <td><span class="sw" style="background:rgb(${p.r},${p.g},${p.b});${(p.r+p.g+p.b) > 700 ? 'border:1px solid #888' : ''}"></span></td>
+        <td class="sw-cell">${swatchSvg(p)}</td>
         <td><b>DMC ${p.code}</b></td>
         <td>${p.name}</td>
         <td class="num">${p.count.toLocaleString()}</td>
@@ -526,6 +834,12 @@ export default function DiamondPaintingConverter() {
   <title>DMC Color Legend</title>
   <style>
     @page { size: letter; margin: 0.5in; }
+    /* Force colors to print on iOS Safari, Chrome, Firefox. */
+    html, body, * {
+      -webkit-print-color-adjust: exact !important;
+      print-color-adjust: exact !important;
+      color-adjust: exact !important;
+    }
     body { font-family: Calibri, Carlito, "Segoe UI", Helvetica, Arial, sans-serif; margin: 0; padding: 0; color: #1a1a1a; }
     h1 { font-size: 22pt; margin: 0 0 4pt; letter-spacing: -0.01em; }
     .meta { font-size: 10pt; color: #444; margin-bottom: 14pt; line-height: 1.6; }
@@ -536,7 +850,8 @@ export default function DiamondPaintingConverter() {
     td { padding: 5pt 6pt; border-bottom: 0.5px solid #ddd; vertical-align: middle; }
     td.sym { font-family: ui-monospace, "Courier New", monospace; font-size: 14pt; font-weight: bold; text-align: center; width: 38pt; }
     td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
-    .sw { display: inline-block; width: 24pt; height: 16pt; vertical-align: middle; }
+    td.sw-cell { width: 40pt; line-height: 0; }
+    td.sw-cell svg { width: 32pt; height: 20pt; }
   </style>
 </head>
 <body>
@@ -548,7 +863,7 @@ export default function DiamondPaintingConverter() {
     <thead>
       <tr>
         <th style="width:38pt;text-align:center">Symbol</th>
-        <th style="width:36pt">Color</th>
+        <th style="width:40pt">Color</th>
         <th>DMC</th>
         <th>Name</th>
         <th class="num">Count</th>
@@ -711,10 +1026,16 @@ ${symbols}
       }
     }
 
+    // Inline SVG swatch — iOS-safe (CSS backgrounds get stripped on print).
+    const swatchSvg = (p) => {
+      const stroke = (p.r + p.g + p.b) > 700 ? '#888' : 'none';
+      return `<svg width="30" height="18" viewBox="0 0 30 18" xmlns="http://www.w3.org/2000/svg" style="display:inline-block;vertical-align:middle"><rect width="30" height="18" fill="rgb(${p.r},${p.g},${p.b})" stroke="${stroke}" stroke-width="1"/></svg>`;
+    };
+
     const paletteRows = pattern.palette.map(p => `
       <tr>
         <td class="sym">${p.symbol}</td>
-        <td><span class="sw" style="background:rgb(${p.r},${p.g},${p.b});${(p.r+p.g+p.b) > 700 ? 'border:1px solid #888' : ''}"></span></td>
+        <td class="sw-cell">${swatchSvg(p)}</td>
         <td><b>DMC ${p.code}</b></td>
         <td>${p.name}</td>
         <td class="num">${p.count.toLocaleString()}</td>
@@ -733,6 +1054,12 @@ ${symbols}
         <style>
           @page { size: letter; margin: ${MARGIN_MM}mm; }
           * { box-sizing: border-box; }
+          /* Force colors to print on iOS Safari, Chrome, Firefox. */
+          html, body, * {
+            -webkit-print-color-adjust: exact !important;
+            print-color-adjust: exact !important;
+            color-adjust: exact !important;
+          }
           body { font-family: Calibri, Carlito, "Segoe UI", Helvetica, Arial, sans-serif; margin: 0; color: #1a1a1a; }
           .page { page-break-after: always; }
           .page:last-child { page-break-after: auto; }
@@ -749,7 +1076,8 @@ ${symbols}
           td { padding: 4pt 6pt; border-bottom: 0.5px solid #ddd; vertical-align: middle; }
           td.sym { font-family: ui-monospace, "Courier New", monospace; font-size: 14pt; font-weight: bold; text-align: center; width: 36pt; }
           td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
-          .sw { display: inline-block; width: 22pt; height: 14pt; vertical-align: middle; }
+          td.sw-cell { width: 38pt; line-height: 0; }
+          td.sw-cell svg { width: 30pt; height: 18pt; }
           .footer { font-size: 8pt; color: #888; text-align: center; margin-top: 16pt; font-style: italic; }
           .tile-page { padding: 0; }
           .tile-header { font-size: 9pt; color: #444; margin-bottom: 5mm; line-height: 1.55; border-bottom: 0.5pt solid #888; padding-bottom: 3mm; }
@@ -782,7 +1110,7 @@ ${symbols}
             <thead>
               <tr>
                 <th style="width:36pt;text-align:center">Symbol</th>
-                <th style="width:34pt">Color</th>
+                <th style="width:38pt">Color</th>
                 <th>DMC</th>
                 <th>Name</th>
                 <th class="num">Count</th>
@@ -862,6 +1190,108 @@ ${symbols}
             )}
             {imageData && (
               <img src={imageData.dataUrl} alt="" style={{ marginTop: '12px', width: '100%', maxHeight: '180px', objectFit: 'contain', background: '#f4f1ea', border: '1px solid #d4cfc0' }} />
+            )}
+          </div>
+
+          {/* HISTORY PANEL — auto-saves every generation, restorable across tabs/sessions */}
+          <div className="panel p-5">
+            <div
+              className="flex items-center justify-between"
+              style={{ cursor: 'pointer', userSelect: 'none' }}
+              onClick={() => setHistoryOpen(o => !o)}
+            >
+              <div className="flex items-center gap-2">
+                <History size={16} />
+                <span className="label-sm">History</span>
+                {history.length > 0 && (
+                  <span className="num-display" style={{ fontSize: '11px', color: '#888', fontWeight: 'bold' }}>
+                    {history.length}
+                  </span>
+                )}
+              </div>
+              {historyOpen ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+            </div>
+
+            {historyOpen && (
+              <div className="mt-4">
+                {historyError && (
+                  <div style={{ padding: '8px 10px', background: '#fff4e0', borderLeft: '3px solid #d97706', fontSize: '11px', marginBottom: '10px', color: '#7c2d12' }}>
+                    {historyError}
+                  </div>
+                )}
+                {history.length === 0 ? (
+                  <p style={{ fontSize: '12px', color: '#999', fontStyle: 'italic', lineHeight: '1.5' }}>
+                    Patterns are saved here automatically each time you generate. Open this page in a new tab anytime to re-print a saved legend.
+                  </p>
+                ) : (
+                  <>
+                    <div style={{ maxHeight: '340px', overflowY: 'auto', margin: '-4px', padding: '4px' }}>
+                      {history.map(h => {
+                        const active = activeHistoryId === h.id;
+                        return (
+                          <div
+                            key={h.id}
+                            onClick={() => restoreFromHistory(h.id)}
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '10px',
+                              padding: '8px',
+                              marginBottom: '4px',
+                              background: active ? '#f4f1ea' : 'transparent',
+                              border: active ? '1px solid #b8860b' : '1px solid transparent',
+                              cursor: 'pointer',
+                              transition: 'background 0.15s',
+                            }}
+                            onMouseEnter={e => { if (!active) e.currentTarget.style.background = '#faf8f1'; }}
+                            onMouseLeave={e => { if (!active) e.currentTarget.style.background = 'transparent'; }}
+                            title="Click to restore"
+                          >
+                            <img
+                              src={h.thumbDataUrl}
+                              alt=""
+                              style={{ width: '44px', height: '44px', objectFit: 'cover', flexShrink: 0, border: '1px solid #d4cfc0', background: '#fff' }}
+                            />
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <div style={{ fontWeight: 'bold', fontSize: '12px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                {h.name}
+                              </div>
+                              <div className="num-display" style={{ fontSize: '10px', color: '#888', marginTop: '2px' }}>
+                                {h.gridW}×{h.gridH} · {h.paletteCount} colors
+                              </div>
+                              <div style={{ fontSize: '10px', color: '#aaa', marginTop: '1px' }}>
+                                {formatHistoryDate(h.createdAt)}
+                              </div>
+                            </div>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                              <button
+                                onClick={(e) => { e.stopPropagation(); renameHistoryItem(h.id); }}
+                                title="Rename"
+                                style={{ background: 'transparent', border: 'none', cursor: 'pointer', padding: '3px', color: '#888', lineHeight: 0 }}
+                              >
+                                <RotateCcw size={12} />
+                              </button>
+                              <button
+                                onClick={(e) => deleteHistoryItem(h.id, e)}
+                                title="Delete"
+                                style={{ background: 'transparent', border: 'none', cursor: 'pointer', padding: '3px', color: '#888', lineHeight: 0 }}
+                              >
+                                <Trash2 size={12} />
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <button
+                      onClick={clearAllHistory}
+                      style={{ marginTop: '10px', background: 'transparent', border: 'none', color: '#888', fontSize: '11px', textDecoration: 'underline', cursor: 'pointer', padding: 0 }}
+                    >
+                      Clear all history
+                    </button>
+                  </>
+                )}
+              </div>
             )}
           </div>
 
