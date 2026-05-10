@@ -452,8 +452,11 @@ const SYMBOL_POOL = [
 
 export default function DiamondPaintingConverter() {
   const [imageData, setImageData] = useState(null); // {dataUrl, width, height, name}
-  const [canvasWidthIn, setCanvasWidthIn] = useState(12);
-  const [canvasHeightIn, setCanvasHeightIn] = useState(12);
+  // Canvas size in cm — matches how diamond painting kits are actually sold
+  // (30x40, 40x50, etc.). Internal math runs in mm for exact grid counts:
+  // 40cm @ 2.5mm = 160 cells exactly, no rounding error.
+  const [canvasWidthCm, setCanvasWidthCm] = useState(40);
+  const [canvasHeightCm, setCanvasHeightCm] = useState(30);
   const [drillSizeMm, setDrillSizeMm] = useState(2.5);
   const [maxColors, setMaxColors] = useState(30);
   const [drillShape, setDrillShape] = useState('round'); // 'round' | 'square'
@@ -508,11 +511,20 @@ export default function DiamondPaintingConverter() {
     };
   }, [refreshHistory]);
 
-  // Derived: grid dimensions based on physical sizes
-  const MM_PER_IN = 25.4;
-  const gridW = Math.max(1, Math.round((canvasWidthIn * MM_PER_IN) / drillSizeMm));
-  const gridH = Math.max(1, Math.round((canvasHeightIn * MM_PER_IN) / drillSizeMm));
+  // Derived: grid dimensions in cells. Math runs in mm: cm * 10 / drillMm.
+  // For standard kit sizes (30, 40, 50, 70 cm) at standard drills (2.5, 2.8, 3.0 mm)
+  // this lands on exact integers; only odd combos round.
+  const canvasWidthMm = canvasWidthCm * 10;
+  const canvasHeightMm = canvasHeightCm * 10;
+  const gridW = Math.max(1, Math.round(canvasWidthMm / drillSizeMm));
+  const gridH = Math.max(1, Math.round(canvasHeightMm / drillSizeMm));
   const totalDrills = gridW * gridH;
+  // Actual printed canvas size based on the rounded grid (what you'll really get).
+  const actualWidthMm = gridW * drillSizeMm;
+  const actualHeightMm = gridH * drillSizeMm;
+  // Inches readout for reference (1 in = 2.54 cm exactly).
+  const canvasWidthIn = canvasWidthCm / 2.54;
+  const canvasHeightIn = canvasHeightCm / 2.54;
 
   const handleFile = (e) => {
     const file = e.target.files?.[0];
@@ -556,8 +568,8 @@ export default function DiamondPaintingConverter() {
         paletteCount: currentPattern.palette.length,
         drillCount: currentPattern.grid.length,
         settings: {
-          canvasWidthIn,
-          canvasHeightIn,
+          canvasWidthCm,
+          canvasHeightCm,
           drillSizeMm,
           maxColors,
           drillShape,
@@ -586,7 +598,7 @@ export default function DiamondPaintingConverter() {
       console.error('Failed to save to history', err);
       setHistoryError('Could not save to history. Storage may be full.');
     }
-  }, [canvasWidthIn, canvasHeightIn, drillSizeMm, maxColors, drillShape, refreshHistory]);
+  }, [canvasWidthCm, canvasHeightCm, drillSizeMm, maxColors, drillShape, refreshHistory]);
 
   // Restore: pull full record from DB and rehydrate state without re-running the matcher.
   const restoreFromHistory = async (id) => {
@@ -600,11 +612,15 @@ export default function DiamondPaintingConverter() {
         name: rec.name,
       });
       if (rec.settings) {
-        setCanvasWidthIn(rec.settings.canvasWidthIn);
-        setCanvasHeightIn(rec.settings.canvasHeightIn);
-        setDrillSizeMm(rec.settings.drillSizeMm);
-        setMaxColors(rec.settings.maxColors);
-        setDrillShape(rec.settings.drillShape);
+        // Migrate older entries that stored inches.
+        const s = rec.settings;
+        const cmW = s.canvasWidthCm != null ? s.canvasWidthCm : (s.canvasWidthIn != null ? s.canvasWidthIn * 2.54 : 40);
+        const cmH = s.canvasHeightCm != null ? s.canvasHeightCm : (s.canvasHeightIn != null ? s.canvasHeightIn * 2.54 : 30);
+        setCanvasWidthCm(cmW);
+        setCanvasHeightCm(cmH);
+        setDrillSizeMm(s.drillSizeMm);
+        setMaxColors(s.maxColors);
+        setDrillShape(s.drillShape);
       }
       setPattern(rec.pattern);
       setActiveHistoryId(id);
@@ -857,7 +873,7 @@ export default function DiamondPaintingConverter() {
 <body>
   <h1>DMC Color Legend</h1>
   <div class="meta">
-    ${pattern.palette.length} colors &middot; ${pattern.grid.length.toLocaleString()} drills &middot; Canvas ${canvasWidthIn}" &times; ${canvasHeightIn}" &middot; ${drillSizeMm.toFixed(2)}mm ${drillShape}
+    ${pattern.palette.length} colors &middot; ${pattern.grid.length.toLocaleString()} drills &middot; Canvas ${canvasWidthCm} &times; ${canvasHeightCm} cm (${canvasWidthIn.toFixed(2)}" &times; ${canvasHeightIn.toFixed(2)}") &middot; ${drillSizeMm.toFixed(2)}mm ${drillShape}
   </div>
   <table>
     <thead>
@@ -1090,10 +1106,11 @@ ${symbols}
         <div class="page">
           <h1>Diamond Painting Pattern</h1>
           <div class="meta">
-            <b>Canvas:</b> ${canvasWidthIn}" &times; ${canvasHeightIn}" &nbsp;(${(canvasWidthIn*25.4).toFixed(0)}mm &times; ${(canvasHeightIn*25.4).toFixed(0)}mm)<br/>
+            <b>Canvas:</b> ${canvasWidthCm} &times; ${canvasHeightCm} cm &nbsp;(${canvasWidthIn.toFixed(2)}" &times; ${canvasHeightIn.toFixed(2)}")<br/>
             <b>Drill:</b> ${drillSizeMm.toFixed(2)}mm ${drillShape}<br/>
             <b>Grid:</b> ${pattern.gridW} &times; ${pattern.gridH} cells<br/>
             <b>Total drills:</b> ${pattern.grid.length.toLocaleString()}<br/>
+            <b>Printed pattern size:</b> ${(pattern.gridW * drillSizeMm / 10).toFixed(2)} &times; ${(pattern.gridH * drillSizeMm / 10).toFixed(2)} cm<br/>
             <b>Colors:</b> ${pattern.palette.length}<br/>
             <b>Pattern sections:</b> ${pagesY} row${pagesY===1?'':'s'} &times; ${pagesX} col${pagesX===1?'':'s'} (${pagesY * pagesX} page${pagesY*pagesX===1?'':'s'} at 1:1 scale)
           </div>
@@ -1300,14 +1317,33 @@ ${symbols}
               <Settings size={16} />
               <span className="label-sm">Canvas Size</span>
             </div>
-            <div className="grid grid-cols-2 gap-3 mb-4">
+            <div className="grid grid-cols-2 gap-3 mb-3">
               <div>
-                <label className="label-sm block mb-1">Width (in)</label>
-                <input type="number" min="2" max="60" step="0.5" value={canvasWidthIn} onChange={e => setCanvasWidthIn(parseFloat(e.target.value) || 0)} />
+                <label className="label-sm block mb-1">Width (cm)</label>
+                <input type="number" min="5" max="150" step="0.5" value={canvasWidthCm} onChange={e => setCanvasWidthCm(parseFloat(e.target.value) || 0)} />
               </div>
               <div>
-                <label className="label-sm block mb-1">Height (in)</label>
-                <input type="number" min="2" max="60" step="0.5" value={canvasHeightIn} onChange={e => setCanvasHeightIn(parseFloat(e.target.value) || 0)} />
+                <label className="label-sm block mb-1">Height (cm)</label>
+                <input type="number" min="5" max="150" step="0.5" value={canvasHeightCm} onChange={e => setCanvasHeightCm(parseFloat(e.target.value) || 0)} />
+              </div>
+            </div>
+            <div className="mb-3">
+              <label className="label-sm block mb-1">Common kit sizes</label>
+              <div className="grid grid-cols-3 gap-1.5" style={{ fontSize: '10.5px' }}>
+                {[
+                  [20, 30], [30, 40], [30, 30],
+                  [40, 50], [40, 40], [40, 30],
+                  [50, 70], [50, 50], [60, 80],
+                ].map(([w, h]) => (
+                  <button
+                    key={`${w}x${h}`}
+                    className={`py-1.5 px-1 ${(canvasWidthCm === w && canvasHeightCm === h) ? 'btn-primary' : 'btn-ghost'}`}
+                    style={{ fontWeight: 600 }}
+                    onClick={() => { setCanvasWidthCm(w); setCanvasHeightCm(h); }}
+                  >
+                    {w}×{h}
+                  </button>
+                ))}
               </div>
             </div>
             <div className="mb-3">
@@ -1327,8 +1363,14 @@ ${symbols}
               </div>
             </div>
             <div style={{ background: '#f4f1ea', padding: '10px 12px', borderLeft: '3px solid #b8860b', fontSize: '12px', marginTop: '12px' }}>
-              <div style={{ fontWeight: 'bold' }}>Auto grid: <span className="num-display">{gridW} × {gridH}</span></div>
-              <div style={{ color: '#666', marginTop: '2px' }}><span className="num-display">{totalDrills.toLocaleString()}</span> drills total</div>
+              <div style={{ fontWeight: 'bold' }}>Grid: <span className="num-display">{gridW} × {gridH}</span> drills</div>
+              <div style={{ color: '#666', marginTop: '2px' }}>
+                <span className="num-display">{totalDrills.toLocaleString()}</span> total
+              </div>
+              <div style={{ color: '#888', marginTop: '4px', fontSize: '11px' }}>
+                Printed size: <span className="num-display">{(actualWidthMm/10).toFixed(1)} × {(actualHeightMm/10).toFixed(1)} cm</span>
+                {' '}<span style={{ color: '#aaa' }}>({canvasWidthIn.toFixed(2)}″ × {canvasHeightIn.toFixed(2)}″)</span>
+              </div>
             </div>
           </div>
 
