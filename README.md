@@ -6,7 +6,7 @@ A free tool by [Produce Pixels](https://producepixels.com).
 
 ## Features
 
-- **240+ DMC colors** with perceptual (CIE Lab) color matching
+- **454 DMC colors** (full mouliné cotton range) with perceptual (CIE Lab) color matching
 - **Auto-sizing grid** — set canvas inches + drill mm, grid math is exact
 - **Numbers and letters** instead of confusing symbols
 - **Printable pattern** with cover page, full legend, and tiled chart pages
