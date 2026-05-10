@@ -1,5 +1,50 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { Upload, Download, Sparkles, Settings, Grid3x3, Printer, Palette, Image as ImageIcon, Loader2, History, Trash2, RotateCcw, ChevronDown, ChevronUp } from 'lucide-react';
+import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
+import { Upload, Download, Sparkles, Settings, Grid3x3, Printer, Palette, Image as ImageIcon, Loader2, History, Trash2, RotateCcw, ChevronDown, ChevronUp, Package, ShoppingCart, X, Search, Check } from 'lucide-react';
+
+// Maps a DMC color's name to a broad family for inventory grouping.
+// Order matters — more specific patterns first (e.g. "Plum" before "Purple",
+// "Coral" before "Red").
+function colorFamily(c) {
+  const n = (c.name || '').toLowerCase();
+  if (/black|jet/.test(n)) return 'Black';
+  if (/snow white|white tin|^white|off white|cream|ivory/.test(n)) return 'White';
+  if (/gray|grey|pewter|steel|ash|beaver/.test(n)) return 'Gray';
+  if (/coral|salmon|melon|rose|carnation|dusty|alizarin|apple|baby pink|pink/.test(n)) return 'Pink';
+  if (/cranberry|garnet|christmas red|coral red|^red\b|red\s|red\b/.test(n)) return 'Red';
+  if (/plum/.test(n)) return 'Magenta';
+  if (/lavender|violet|orchid/.test(n)) return 'Purple';
+  if (/turquoise|aquamarine|sea green|teal/.test(n)) return 'Teal';
+  if (/blue|navy|wedgewood|sky|cornflower|delft|royal|peacock|antique/.test(n)) return 'Blue';
+  if (/jade|emerald|nile|forest|hunter|pine|chartreuse|kelly|parrot|avocado|olive|moss|pistachio|green/.test(n)) return 'Green';
+  if (/yellow|lemon|gold|canary|topaz/.test(n)) return 'Yellow';
+  if (/orange|tangerine|pumpkin|burnt|spice|autumn/.test(n)) return 'Orange';
+  if (/mahogany|coffee|mocha|hazelnut|brown|tan\b|cocoa|rosewood|desert sand|terra|tawny|beige/.test(n)) return 'Brown';
+  return 'Other';
+}
+
+const FAMILY_ORDER = ['White', 'Gray', 'Black', 'Red', 'Pink', 'Magenta', 'Purple', 'Blue', 'Teal', 'Green', 'Yellow', 'Orange', 'Brown', 'Other'];
+
+// localStorage-backed inventory of owned DMC codes.
+const MY_DRILLS_KEY = 'sparkle-atelier-my-drills';
+function loadMyDrills() {
+  try {
+    const raw = localStorage.getItem(MY_DRILLS_KEY);
+    if (!raw) return new Set();
+    const arr = JSON.parse(raw);
+    return new Set(Array.isArray(arr) ? arr : []);
+  } catch { return new Set(); }
+}
+function persistMyDrills(set) {
+  try { localStorage.setItem(MY_DRILLS_KEY, JSON.stringify([...set])); }
+  catch (e) { console.error('Failed to save drill inventory', e); }
+}
+
+function aliExpressUrl(code) {
+  return `https://www.aliexpress.com/wholesale?SearchText=${encodeURIComponent(`DMC ${code} diamond painting drill`)}`;
+}
+function etsyUrl(code) {
+  return `https://www.etsy.com/search?q=${encodeURIComponent(`DMC ${code} diamond painting drill`)}`;
+}
 
 // === IndexedDB history store ===
 // Keeps every generated pattern + the source image so users can re-print
@@ -419,8 +464,34 @@ function rgbToLab(r, g, b) {
   return [(116 * Y) - 16, 500 * (X - Y), 200 * (Y - Z)];
 }
 
+// De-dupe by code — the curated list has a few accidental duplicates.
+const DMC_UNIQUE = (() => {
+  const seen = new Set();
+  return DMC_COLORS.filter(c => {
+    if (seen.has(c.code)) return false;
+    seen.add(c.code);
+    return true;
+  });
+})();
+
 // Pre-compute Lab values for each DMC color
-const DMC_LAB = DMC_COLORS.map(c => ({ ...c, lab: rgbToLab(c.r, c.g, c.b) }));
+const DMC_LAB = DMC_UNIQUE.map(c => ({ ...c, lab: rgbToLab(c.r, c.g, c.b) }));
+
+// Family-grouped, alphabetized-by-code list for the inventory picker.
+const DMC_BY_FAMILY = (() => {
+  const groups = {};
+  for (const c of DMC_UNIQUE) {
+    const fam = colorFamily(c);
+    (groups[fam] ||= []).push(c);
+  }
+  // Within each family, sort by approximate brightness (light → dark) so swatches read like a gradient.
+  for (const fam of Object.keys(groups)) {
+    groups[fam].sort((a, b) => (b.r + b.g + b.b) - (a.r + a.g + a.b));
+  }
+  return FAMILY_ORDER
+    .filter(f => groups[f] && groups[f].length)
+    .map(f => ({ family: f, colors: groups[f] }));
+})();
 
 function findNearestDMC(r, g, b, palette = DMC_LAB) {
   const [L, a, bL] = rgbToLab(r, g, b);
@@ -468,6 +539,57 @@ export default function DiamondPaintingConverter() {
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historyError, setHistoryError] = useState(null);
   const [activeHistoryId, setActiveHistoryId] = useState(null);
+
+  // Inventory of owned drills + toggle to restrict matching to those colors only.
+  const [myDrills, setMyDrills] = useState(() => loadMyDrills());
+  const [useMyDrillsOnly, setUseMyDrillsOnly] = useState(false);
+  const [inventoryOpen, setInventoryOpen] = useState(false);
+  const [inventorySearch, setInventorySearch] = useState('');
+
+  const toggleDrill = (code) => {
+    setMyDrills(prev => {
+      const next = new Set(prev);
+      if (next.has(code)) next.delete(code); else next.add(code);
+      persistMyDrills(next);
+      return next;
+    });
+  };
+  const setFamilyDrills = (familyCodes, on) => {
+    setMyDrills(prev => {
+      const next = new Set(prev);
+      for (const code of familyCodes) {
+        if (on) next.add(code); else next.delete(code);
+      }
+      persistMyDrills(next);
+      return next;
+    });
+  };
+  const clearAllDrills = () => {
+    if (!confirm('Clear your entire drill inventory?')) return;
+    const next = new Set();
+    persistMyDrills(next);
+    setMyDrills(next);
+  };
+  const saveCurrentAsInventory = () => {
+    if (!pattern) return;
+    const next = new Set(pattern.palette.map(p => p.code));
+    persistMyDrills(next);
+    setMyDrills(next);
+  };
+
+  // Filtered family groups for the inventory modal (memoized — runs on every keystroke).
+  const filteredFamilies = useMemo(() => {
+    const q = inventorySearch.trim().toLowerCase();
+    if (!q) return DMC_BY_FAMILY;
+    return DMC_BY_FAMILY
+      .map(({ family, colors }) => ({
+        family,
+        colors: colors.filter(c =>
+          c.code.toLowerCase().includes(q) || c.name.toLowerCase().includes(q)
+        ),
+      }))
+      .filter(g => g.colors.length > 0);
+  }, [inventorySearch]);
 
   const fileInputRef = useRef(null);
   const previewCanvasRef = useRef(null);
@@ -674,6 +796,10 @@ export default function DiamondPaintingConverter() {
 
   const generatePattern = useCallback(async () => {
     if (!imageData) return;
+    if (useMyDrillsOnly && myDrills.size === 0) {
+      alert('Add colors to your drill inventory first, then try again.');
+      return;
+    }
     setProcessing(true);
     // Yield to UI
     await new Promise(r => setTimeout(r, 50));
@@ -704,23 +830,28 @@ export default function DiamondPaintingConverter() {
     sctx.drawImage(img, sx, sy, sw, sh, 0, 0, gridW, gridH);
     const imgData = sctx.getImageData(0, 0, gridW, gridH).data;
 
-    // Step 2: collect all pixels with their initial DMC matches
-    const initialMatches = new Map(); // code -> {color, count}
-    const pixelMatches = new Array(gridW * gridH);
-    for (let i = 0; i < gridW * gridH; i++) {
-      const r = imgData[i*4], g = imgData[i*4+1], b = imgData[i*4+2];
-      const m = findNearestDMC(r, g, b);
-      pixelMatches[i] = m;
-      const e = initialMatches.get(m.code);
-      if (e) e.count++;
-      else initialMatches.set(m.code, { color: m, count: 1 });
+    let kept;
+    if (useMyDrillsOnly) {
+      // Strict inventory mode: palette = every DMC the user owns. No frequency-pruning;
+      // each pixel matches its nearest owned color, and the final palette is whichever
+      // owned colors actually appeared.
+      kept = DMC_LAB.filter(c => myDrills.has(c.code));
+    } else {
+      // Step 2: collect all pixels with their initial DMC matches
+      const initialMatches = new Map(); // code -> {color, count}
+      for (let i = 0; i < gridW * gridH; i++) {
+        const r = imgData[i*4], g = imgData[i*4+1], b = imgData[i*4+2];
+        const m = findNearestDMC(r, g, b);
+        const e = initialMatches.get(m.code);
+        if (e) e.count++;
+        else initialMatches.set(m.code, { color: m, count: 1 });
+      }
+      // Step 3: limit to top N colors. Sort by frequency; less-used colors get
+      // remapped to the nearest kept DMC color in step 4.
+      const sorted = [...initialMatches.values()].sort((a, b) => b.count - a.count);
+      kept = sorted.slice(0, maxColors).map(e => e.color);
     }
-
-    // Step 3: limit to top N colors. Sort by frequency; for less-used colors,
-    // remap their pixels to the nearest *kept* DMC color.
-    const sorted = [...initialMatches.values()].sort((a, b) => b.count - a.count);
-    const kept = sorted.slice(0, maxColors).map(e => e.color);
-    const keptLab = kept.map(c => ({ ...c, lab: rgbToLab(c.r, c.g, c.b) }));
+    const keptLab = kept.map(c => c.lab ? c : { ...c, lab: rgbToLab(c.r, c.g, c.b) });
 
     // Step 4: rebuild grid using kept palette
     const grid = new Array(gridW * gridH);
@@ -742,13 +873,13 @@ export default function DiamondPaintingConverter() {
         count: finalCounts.get(c.code) || 0,
       }));
 
-    const newPattern = { grid, palette, gridW, gridH };
+    const newPattern = { grid, palette, gridW, gridH, usedInventory: !!useMyDrillsOnly };
     setPattern(newPattern);
     setProcessing(false);
 
     // Auto-save to local history so user can re-print legend later without re-uploading.
     saveToHistory(imageData, newPattern);
-  }, [imageData, gridW, gridH, maxColors, saveToHistory]);
+  }, [imageData, gridW, gridH, maxColors, useMyDrillsOnly, myDrills, saveToHistory]);
 
   // Render color preview
   useEffect(() => {
@@ -1379,11 +1510,67 @@ ${symbols}
               <Palette size={16} />
               <span className="label-sm">Color Limit</span>
             </div>
-            <div className="flex items-center gap-3 mb-2">
-              <input type="range" min="5" max="80" value={maxColors} onChange={e => setMaxColors(parseInt(e.target.value))} />
-              <span className="num-display font-bold" style={{ minWidth: '30px', textAlign: 'right' }}>{maxColors}</span>
-            </div>
-            <p style={{ fontSize: '11px', color: '#666', lineHeight: '1.4' }}>Fewer colors = simpler kit. More colors = better detail. 25–40 is typical.</p>
+
+            {/* Inventory mode toggle */}
+            <label style={{ display: 'flex', alignItems: 'flex-start', gap: '10px', padding: '10px', background: useMyDrillsOnly ? '#fff8e6' : '#faf8f1', border: `1px solid ${useMyDrillsOnly ? '#b8860b' : '#d4cfc0'}`, cursor: 'pointer', marginBottom: '12px' }}>
+              <input
+                type="checkbox"
+                checked={useMyDrillsOnly}
+                onChange={e => setUseMyDrillsOnly(e.target.checked)}
+                style={{ marginTop: '2px', flexShrink: 0 }}
+              />
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: '12px', fontWeight: 700 }}>Use my drills only</div>
+                <div style={{ fontSize: '11px', color: '#666', marginTop: '2px', lineHeight: 1.4 }}>
+                  Match the pattern using just the DMC colors you already own.
+                </div>
+              </div>
+            </label>
+
+            {useMyDrillsOnly ? (
+              <>
+                <div style={{ fontSize: '12px', marginBottom: '8px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <span><Package size={12} style={{ display: 'inline', marginRight: 4 }} /><b className="num-display">{myDrills.size}</b> drill{myDrills.size === 1 ? '' : 's'} owned</span>
+                </div>
+                <button
+                  className="btn-ghost w-full py-2 text-xs font-semibold flex items-center justify-center gap-2"
+                  onClick={() => setInventoryOpen(true)}
+                >
+                  <Settings size={12} /> Manage my drills
+                </button>
+                {myDrills.size === 0 && (
+                  <p style={{ fontSize: '11px', color: '#b45309', marginTop: '8px', lineHeight: '1.4' }}>
+                    Add at least one color before generating.
+                  </p>
+                )}
+                {pattern && (
+                  <button
+                    className="w-full py-1 text-xs"
+                    onClick={saveCurrentAsInventory}
+                    style={{ background: 'transparent', border: 'none', color: '#888', textDecoration: 'underline', cursor: 'pointer', marginTop: '8px' }}
+                  >
+                    Save this pattern's {pattern.palette.length} colors as my inventory
+                  </button>
+                )}
+              </>
+            ) : (
+              <>
+                <div className="flex items-center gap-3 mb-2">
+                  <input type="range" min="5" max="80" value={maxColors} onChange={e => setMaxColors(parseInt(e.target.value))} />
+                  <span className="num-display font-bold" style={{ minWidth: '30px', textAlign: 'right' }}>{maxColors}</span>
+                </div>
+                <p style={{ fontSize: '11px', color: '#666', lineHeight: '1.4' }}>Fewer colors = simpler kit. More colors = better detail. 25–40 is typical.</p>
+                {myDrills.size > 0 && (
+                  <button
+                    className="w-full py-1 text-xs"
+                    onClick={() => setInventoryOpen(true)}
+                    style={{ background: 'transparent', border: 'none', color: '#888', textDecoration: 'underline', cursor: 'pointer', marginTop: '8px' }}
+                  >
+                    My inventory: {myDrills.size} drills
+                  </button>
+                )}
+              </>
+            )}
           </div>
 
           <button
@@ -1507,26 +1694,200 @@ ${symbols}
             {!pattern ? (
               <p style={{ fontSize: '12px', color: '#999', fontStyle: 'italic' }}>Generate a pattern to see the color list.</p>
             ) : (
-              <div style={{ maxHeight: '70vh', overflowY: 'auto', margin: '-4px', padding: '4px' }}>
-                {pattern.palette.map((p, i) => (
-                  <div key={p.code + i} style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '8px 6px', borderBottom: '1px solid #ece8dc', fontSize: '12px' }}>
-                    <span className="num-display" style={{ width: '20px', fontWeight: 'bold', textAlign: 'center', fontSize: '13px' }}>{p.symbol}</span>
-                    <div style={{ width: '24px', height: '24px', background: `rgb(${p.r},${p.g},${p.b})`, border: '1px solid rgba(0,0,0,0.2)', flexShrink: 0 }} />
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontWeight: 'bold' }}>DMC {p.code}</div>
-                      <div style={{ color: '#888', fontSize: '10px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{p.name}</div>
-                    </div>
-                    <div className="num-display" style={{ fontSize: '10px', color: '#666', textAlign: 'right' }}>
-                      <div>{p.count.toLocaleString()}</div>
-                      <div>{(p.count / pattern.grid.length * 100).toFixed(1)}%</div>
-                    </div>
+              <>
+                {pattern.usedInventory && (
+                  <div style={{ fontSize: '11px', padding: '8px 10px', background: '#fff8e6', border: '1px solid #b8860b', marginBottom: '10px', lineHeight: 1.4 }}>
+                    <b>Inventory mode</b> · matched from your owned drills
                   </div>
-                ))}
-              </div>
+                )}
+                <div style={{ maxHeight: '70vh', overflowY: 'auto', margin: '-4px', padding: '4px' }}>
+                  {pattern.palette.map((p, i) => {
+                    const owned = myDrills.has(p.code);
+                    return (
+                      <div key={p.code + i} style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '8px 6px', borderBottom: '1px solid #ece8dc', fontSize: '12px' }}>
+                        <span className="num-display" style={{ width: '20px', fontWeight: 'bold', textAlign: 'center', fontSize: '13px' }}>{p.symbol}</span>
+                        <div style={{ width: '24px', height: '24px', background: `rgb(${p.r},${p.g},${p.b})`, border: '1px solid rgba(0,0,0,0.2)', flexShrink: 0, position: 'relative' }}>
+                          {owned && (
+                            <div title="In your inventory" style={{ position: 'absolute', top: '-4px', right: '-4px', width: '12px', height: '12px', background: '#16a34a', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff' }}>
+                              <Check size={8} strokeWidth={4} />
+                            </div>
+                          )}
+                        </div>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontWeight: 'bold' }}>DMC {p.code}</div>
+                          <div style={{ color: '#888', fontSize: '10px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{p.name}</div>
+                        </div>
+                        <div className="num-display" style={{ fontSize: '10px', color: '#666', textAlign: 'right' }}>
+                          <div>{p.count.toLocaleString()}</div>
+                          <div>{(p.count / pattern.grid.length * 100).toFixed(1)}%</div>
+                        </div>
+                        <a
+                          href={aliExpressUrl(p.code)}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          title={`Search AliExpress for DMC ${p.code} drills`}
+                          style={{ color: '#888', padding: '2px', display: 'flex', alignItems: 'center', textDecoration: 'none' }}
+                          onMouseEnter={e => e.currentTarget.style.color = '#b8860b'}
+                          onMouseLeave={e => e.currentTarget.style.color = '#888'}
+                        >
+                          <ShoppingCart size={13} />
+                        </a>
+                      </div>
+                    );
+                  })}
+                </div>
+                <div style={{ marginTop: '10px', paddingTop: '10px', borderTop: '1px solid #ece8dc', fontSize: '10px', color: '#888', lineHeight: 1.5 }}>
+                  <ShoppingCart size={10} style={{ display: 'inline', marginRight: 3, verticalAlign: '-1px' }} />
+                  Click cart icons to search AliExpress for cheap drill bags. Etsy/Amazon also stock DMC-coded drills.
+                </div>
+              </>
             )}
           </div>
         </aside>
       </main>
+
+      {/* INVENTORY MODAL — pick which DMC drills you own */}
+      {inventoryOpen && (
+        <div
+          style={{
+            position: 'fixed', inset: 0, zIndex: 100,
+            background: 'rgba(26, 26, 26, 0.55)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            padding: '20px',
+          }}
+          onClick={(e) => { if (e.target === e.currentTarget) setInventoryOpen(false); }}
+        >
+          <div style={{
+            background: '#fffdf8', width: '100%', maxWidth: '720px', maxHeight: '90vh',
+            display: 'flex', flexDirection: 'column',
+            border: '1px solid #d4cfc0', boxShadow: '0 20px 60px rgba(0,0,0,0.25)',
+          }}>
+            {/* Header */}
+            <div style={{ padding: '18px 20px', borderBottom: '1px solid #d4cfc0', display: 'flex', alignItems: 'center', gap: '12px' }}>
+              <Package size={20} />
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: '18px', fontWeight: 'bold' }}>My drill inventory</div>
+                <div style={{ fontSize: '11px', color: '#666' }}>
+                  <b className="num-display">{myDrills.size}</b> of <b className="num-display">{DMC_UNIQUE.length}</b> DMC colors selected
+                </div>
+              </div>
+              <button
+                onClick={() => setInventoryOpen(false)}
+                style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: '#666', padding: '4px' }}
+                title="Close"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            {/* Search */}
+            <div style={{ padding: '12px 20px', borderBottom: '1px solid #ece8dc', background: '#faf8f1' }}>
+              <div style={{ position: 'relative' }}>
+                <Search size={14} style={{ position: 'absolute', left: '10px', top: '50%', transform: 'translateY(-50%)', color: '#999' }} />
+                <input
+                  type="text"
+                  placeholder="Search by DMC code or color name…"
+                  value={inventorySearch}
+                  onChange={e => setInventorySearch(e.target.value)}
+                  style={{ width: '100%', padding: '8px 8px 8px 32px', fontSize: '13px' }}
+                  autoFocus
+                />
+              </div>
+            </div>
+
+            {/* Body — scrollable family-grouped list */}
+            <div style={{ flex: 1, overflowY: 'auto', padding: '0' }}>
+              {filteredFamilies.length === 0 ? (
+                <p style={{ padding: '20px', textAlign: 'center', color: '#999', fontStyle: 'italic' }}>No matches.</p>
+              ) : filteredFamilies.map(({ family, colors }) => {
+                const codes = colors.map(c => c.code);
+                const ownedInFamily = codes.filter(code => myDrills.has(code)).length;
+                const allOwned = ownedInFamily === codes.length;
+                return (
+                  <div key={family}>
+                    <div style={{
+                      position: 'sticky', top: 0, zIndex: 1,
+                      background: '#f4f1ea', padding: '8px 20px',
+                      borderTop: '1px solid #d4cfc0', borderBottom: '1px solid #d4cfc0',
+                      display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                      fontSize: '11px', fontWeight: 'bold', textTransform: 'uppercase', letterSpacing: '0.08em',
+                    }}>
+                      <span>{family} <span style={{ color: '#888', fontWeight: 'normal' }}>· {ownedInFamily}/{codes.length}</span></span>
+                      <button
+                        onClick={() => setFamilyDrills(codes, !allOwned)}
+                        style={{ background: 'transparent', border: 'none', color: '#b8860b', fontSize: '11px', cursor: 'pointer', textDecoration: 'underline', fontWeight: 'normal', textTransform: 'none', letterSpacing: 0 }}
+                      >
+                        {allOwned ? 'Deselect all' : 'Select all'}
+                      </button>
+                    </div>
+                    <div style={{ padding: '4px 8px' }}>
+                      {colors.map(c => {
+                        const owned = myDrills.has(c.code);
+                        return (
+                          <label
+                            key={c.code}
+                            style={{
+                              display: 'flex', alignItems: 'center', gap: '10px',
+                              padding: '7px 12px', cursor: 'pointer',
+                              background: owned ? '#fff8e6' : 'transparent',
+                              borderRadius: '2px',
+                              fontSize: '12px',
+                            }}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={owned}
+                              onChange={() => toggleDrill(c.code)}
+                              style={{ flexShrink: 0 }}
+                            />
+                            <div style={{
+                              width: '28px', height: '20px',
+                              background: `rgb(${c.r},${c.g},${c.b})`,
+                              border: '1px solid rgba(0,0,0,0.15)',
+                              flexShrink: 0,
+                            }} />
+                            <div style={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'baseline', gap: '8px' }}>
+                              <span style={{ fontWeight: 'bold', minWidth: '52px' }}>DMC {c.code}</span>
+                              <span style={{ color: '#666', fontSize: '11px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.name}</span>
+                            </div>
+                            <a
+                              href={aliExpressUrl(c.code)}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              onClick={e => e.stopPropagation()}
+                              title={`Search AliExpress for DMC ${c.code}`}
+                              style={{ color: '#888', padding: '2px', display: 'flex' }}
+                            >
+                              <ShoppingCart size={13} />
+                            </a>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Footer */}
+            <div style={{ padding: '14px 20px', borderTop: '1px solid #d4cfc0', display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: '#faf8f1' }}>
+              <button
+                onClick={clearAllDrills}
+                style={{ background: 'transparent', border: 'none', color: '#888', fontSize: '12px', textDecoration: 'underline', cursor: 'pointer' }}
+                disabled={myDrills.size === 0}
+              >
+                Clear all
+              </button>
+              <button
+                className="btn-primary py-2 px-5 text-sm font-semibold"
+                onClick={() => setInventoryOpen(false)}
+              >
+                Done
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <footer style={{ borderTop: '1px solid #d4cfc0', marginTop: '40px', padding: '20px', textAlign: 'center', fontSize: '11px', color: '#888' }}>
         Built with care for makers · Patterns scale exactly to drill size · Print at 100% (no scaling) for perfect fit
